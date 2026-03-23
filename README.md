@@ -2,6 +2,8 @@
 
 A FastAPI backend that handles document ingestion, vector storage, and streaming AI responses. Built as part of a RAG (Retrieval-Augmented Generation) pipeline that powers a document chat application.
 
+This Project MVP implements naive RAG, the foundational pattern used across the majority of production RAG systems today. It follows the standard embed-store-retrieve-generate flow that teams reach for first because it is fast to build, easy to debug, and performs well across a wide range of document types and query patterns. More complex RAG architectures (query rewriting, re-ranking, hybrid search) typically build on top of this same core, making this a practical and transferable foundation for any AI-powered document application.
+
 ---
 
 ## Tech Stack
