@@ -1,84 +1,61 @@
-# Backend Architecture
-## Context
+# Backend
 
-Greenfield FastAPI backend for a RAG (Retrieval-Augmented Generation) capstone project.
-Users upload a PDF or paste text, ask questions in a chat UI, and receive cited, token-streamed answers.
-The backend defines an API contract synced with a Next.js + React 18 frontend.
-No auth, no multi-document sessions for MVP.
+A FastAPI backend that handles document ingestion, vector storage, and streaming AI responses. Built as part of a RAG (Retrieval-Augmented Generation) pipeline that powers a document chat application.
 
 ---
 
-## Directory Structure
+## Tech Stack
 
-```
-capstone-project-backend/
-├── app/
-│   ├── documents/
-│   │   ├── router.py       # POST /api/documents/upload, GET /api/documents/{id}
-│   │   ├── service.py      # PDF parsing (Docling), chunking (tiktoken), embedding storage
-│   │   ├── models.py       # SQLAlchemy: Document, Chunk
-│   │   └── schemas.py      # Pydantic: DocumentUploadResponse, DocumentStatusResponse
-│   ├── chat/
-│   │   ├── router.py       # POST /api/chat/stream (SSE)
-│   │   ├── service.py      # Vector retrieval, prompt construction, OpenAI streaming
-│   │   └── schemas.py      # Pydantic: ChatRequest, Message
-│   ├── embeddings/
-│   │   └── service.py      # OpenAI embeddings client (text-embedding-3-small)
-│   ├── db.py               # SQLAlchemy async engine + get_session dependency
-│   ├── config.py           # pydantic-settings BaseSettings
-│   └── main.py             # FastAPI app factory, router mounting, CORS middleware
-├── alembic/
-│   └── versions/           # Migration files
-├── tests/
-├── alembic.ini
-├── pyproject.toml
-├── docker-compose.yml      # DB only (pgvector/pgvector:pg16)
-├── Dockerfile
-└── .env.example
-```
+| Layer | Technology |
+|---|---|
+| API Framework | FastAPI (Python) |
+| Database | PostgreSQL 16 + PGVector |
+| ORM | SQLAlchemy (async) |
+| Embeddings | OpenAI `text-embedding-3-small` |
+| Chat Model | OpenAI `gpt-4o-mini` |
+| PDF Parsing | Docling |
+| Tokenization | tiktoken (`cl100k_base`) |
+| Migrations | Alembic |
+| Runtime | Docker (database), uv (application) |
 
 ---
 
-## Running Locally
+## How the RAG Pipeline Works
 
-**Start the database:**
+### Document Ingestion
 
-```bash
-docker compose up -d
-```
+When a document is uploaded, the backend immediately returns a `202 Accepted` response and hands off processing to a background task. This keeps the API non-blocking and responsive while heavy work runs asynchronously.
 
-**Run migrations:**
+The background task runs the document through three stages:
 
-```bash
-uv run alembic upgrade head
-```
+1. **Parsing.** PDF files are converted to plain text using Docling. Plain text uploads skip this step.
+2. **Chunking.** The text is split using a sliding window strategy. A fixed-size window of 512 tokens moves through the document, advancing by 448 tokens each step and leaving a 64-token overlap with the previous chunk. This overlap ensures that sentences or ideas that fall across a boundary are captured in both adjacent chunks rather than being cut off.
+3. **Embedding.** Each chunk is sent to OpenAI's `text-embedding-3-small` model, which returns a 1536-dimensional vector representing the semantic meaning of that chunk. All vectors are stored in PostgreSQL alongside the chunk text using the PGVector extension.
 
-**Run the backend:**
+Once all chunks are stored, the document status is updated to `ready`.
 
-```bash
-uv run uvicorn app.main:app --reload
-```
+### Retrieval and Generation
 
-## Configuration
+When a question comes in, the backend embeds the question using the same model used during ingestion. It then runs a cosine similarity search against the stored chunk vectors using PGVector, retrieving the 5 most semantically relevant chunks.
 
-Environment variables (see `.env.example`):
+Those chunks are assembled into a context block and passed to `gpt-4o-mini` along with the conversation history. The model is instructed to answer strictly from the provided context and to cite its sources, preventing hallucination outside the uploaded material.
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `DATABASE_URL` | — | PostgreSQL connection string (required) |
-| `OPENAI_API_KEY` | — | OpenAI API key (required) |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
-| `CHAT_MODEL` | `gpt-4o-mini` | OpenAI chat model |
-| `TOP_K_CHUNKS` | `5` | Number of chunks retrieved per question |
-| `CHUNK_SIZE` | `512` | Tokens per chunk (tiktoken `cl100k_base`) |
-| `CHUNK_OVERLAP` | `64` | Overlap tokens between adjacent chunks |
+The response is streamed back to the client over SSE (Server-Sent Events) token by token. A final event delivers the source chunk references so the frontend can display citations.
 
 ---
 
-## Infrastructure
+## API
 
-- **Database:** PostgreSQL 16 with PGVector extension, run via Docker (`docker-compose.yml`)
-- **Backend:** Run locally with `uv`; intended for cloud deployment (not containerized locally)
-- **Embeddings:** `text-embedding-3-small` via OpenAI API (1536-dimensional vectors)
-- **Chat:** `gpt-4o-mini` streaming via OpenAI API
-- **CORS:** All origins allowed (`*`) — suitable for local dev; restrict for production
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/documents/upload` | Upload a PDF or plain text, returns a document ID |
+| `GET` | `/api/documents/{id}` | Poll processing status (`processing` or `ready`) |
+| `POST` | `/api/chat/stream` | Submit a question, streams back an SSE response |
+
+---
+
+## Additional Docs
+
+- [Quickstart](documentation/quickstart.md)
+- [Directory Structure](documentation/filestructure.md)
+- [Detailed API](documentation/api.md)
